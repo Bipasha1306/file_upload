@@ -48,3 +48,5 @@
   return sslContext;
  }
 }
+
+//https://riptutorial.com/java/example/1420/loading-truststore-and-keystore-from-inputstream
