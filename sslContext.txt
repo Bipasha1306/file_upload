@@ -1,0 +1,25 @@
+ private SSLContext createSSLContext(final SSLContextService service) throws KeyStoreException, IOException,
+            NoSuchAlgorithmException, CertificateException, KeyManagementException, UnrecoverableKeyException {
+
+        final SSLContextBuilder sslContextBuilder = new SSLContextBuilder();
+
+        if (StringUtils.isNotBlank(service.getTrustStoreFile())) {
+            final KeyStore truststore = KeyStore.getInstance(service.getTrustStoreType());
+            try (final InputStream in = new FileInputStream(new File(service.getTrustStoreFile()))) {
+                truststore.load(in, service.getTrustStorePassword().toCharArray());
+            }
+            sslContextBuilder.loadTrustMaterial(truststore, new TrustSelfSignedStrategy());
+        }
+
+        if (StringUtils.isNotBlank(service.getKeyStoreFile())) {
+            final KeyStore keystore = KeyStore.getInstance(service.getKeyStoreType());
+            try (final InputStream in = new FileInputStream(new File(service.getKeyStoreFile()))) {
+                keystore.load(in, service.getKeyStorePassword().toCharArray());
+            }
+            sslContextBuilder.loadKeyMaterial(keystore, service.getKeyStorePassword().toCharArray());
+        }
+
+        sslContextBuilder.useProtocol(service.getSslAlgorithm());
+
+        return sslContextBuilder.build();
+    }
