@@ -23,3 +23,28 @@
 
         return sslContextBuilder.build();
     }
+    
+    // sslcontext
+     private static SSLContext sslContext(String keystoreFile, String password)
+   throws GeneralSecurityException, IOException {
+  KeyStore keystore = KeyStore.getInstance(KeyStore.getDefaultType());
+  try (InputStream in = new FileInputStream(keystoreFile)) {
+   keystore.load(in, password.toCharArray());
+  }
+  KeyManagerFactory keyManagerFactory =
+    KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+  keyManagerFactory.init(keystore, password.toCharArray());
+
+  TrustManagerFactory trustManagerFactory =
+    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+  trustManagerFactory.init(keystore);
+
+  SSLContext sslContext = SSLContext.getInstance("TLS");
+  sslContext.init(
+    keyManagerFactory.getKeyManagers(),
+    trustManagerFactory.getTrustManagers(),
+    new SecureRandom());
+
+  return sslContext;
+ }
+}
