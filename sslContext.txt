@@ -22,6 +22,19 @@ def input_dataframes(spark):
         "hrchy_entity_inst_fe_df": hrchy_entity_inst_fe_df
     }
 
+# Manually add PROCESSING_MED to match the real implementation
+    src_dataframe = src_dataframe.withColumn("PROCESSING_MED", lit("some_value"))
+
+    # Perform join as in the original code
+    df_joined_src_ccy = src_dataframe.alias('src').join(
+        hie_dataframe_ccy_whr.alias('hie_ccy'),
+        on=col('src.SUB_FUND_CCY') == col('hie_ccy.ENTITY_NM'),
+        how="left"
+    ).select(
+        col('src.PROCESSING_MED'), col('src.TW04_INVOICE_SECTION'),
+        col('hie_ccy.ENTITY_CD').alias('ccy_Ref_Hie_Cd')
+    )
+
 def test_dataframe_join(spark, input_dataframes):
     # Extract input DataFrames
     src_dataframe = input_dataframes["fe_cib_invoice_raw_df"]
