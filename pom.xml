@@ -1,75 +1,592 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-	<modelVersion>4.0.0</modelVersion>
-	<parent>
-		<groupId>org.springframework.boot</groupId>
-		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>2.7.1</version>
-		<relativePath/> <!-- lookup parent from repository -->
-	</parent>
-	<groupId>com.example</groupId>
-	<artifactId>file_upload</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
-	<name>file_upload</name>
-	<description>File Upload using Spring Boot</description>
-	<properties>
-		<java.version>11</java.version>
-	</properties>
-	<dependencies>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-data-jpa</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-web</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-devtools</artifactId>
-			<scope>runtime</scope>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>com.h2database</groupId>
-			<artifactId>h2</artifactId>
-			<scope>runtime</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.projectlombok</groupId>
-			<artifactId>lombok</artifactId>
-			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-test</artifactId>
-			<scope>test</scope>
-		</dependency>
+import pyspark
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lit, concat, collect_list, collect_set, when
+from pyspark.sql import functions as F
+from pyspark.sql.types import StringType
+import logging
 
-		<!--its a parser for csv file in array of string-->
-		<dependency>
-			<groupId>com.univocity</groupId>
-			<artifactId>univocity-parsers</artifactId>
-			<version>2.8.4</version>
-		</dependency>
-	</dependencies>
 
-	<build>
-		<plugins>
-			<plugin>
-				<groupId>org.springframework.boot</groupId>
-				<artifactId>spring-boot-maven-plugin</artifactId>
-				<configuration>
-					<excludes>
-						<exclude>
-							<groupId>org.projectlombok</groupId>
-							<artifactId>lombok</artifactId>
-						</exclude>
-					</excludes>
-				</configuration>
-			</plugin>
-		</plugins>
-	</build>
+class feCibInvoiceLoadTransformer:
 
-</project>
+    def execute_transformer(self, df, catlog):
+        # Log the start of the transformation process
+        logging.info(
+            "Starting the transformation process for catalog: {}".format(catlog))
+
+        # Execute the main transformation function
+        outDF = self.fe_cib_invoice_transformer(df, catlog)
+
+        # Return the transformed DataFrame
+        return outDF
+
+    def fe_cib_invoice_transformer(self, df, catlog):
+        # Initialize logger
+        logger = logging.getLogger(__name__)
+
+        try:
+            # Fetch the reporting date from the job_signoff data
+            rptng_dt_dataframe = df.results.get(
+                'job_signoff_df').results.get("data")
+            rptng_mnth_dt_dt = rptng_dt_dataframe.select(
+                F.max('REPORTING_DATE').alias('REPORTING_DATE'))
+            rptng_mnth_dt = rptng_dt_dataframe.select(
+                'REPORTING_DATE').first()[0]
+            str_rptng_mnth_dt = str(rptng_mnth_dt)
+
+            logger.info("Reporting date fetched successfully: {}".format(
+                str_rptng_mnth_dt))
+
+            # Count the number of rows in the signoff data
+            row_sgnoff_count = rptng_dt_dataframe.count()
+            # logger.info(
+            #     "Signoff dataframe row count: {}".format(row_sgnoff_count))
+
+            # Fetch the job ID from the job_inst data
+            loadid_dt_dataframe = df.results.get(
+                'job_inst_df').results.get("data")
+            loadid_dt_dataframe = loadid_dt_dataframe.filter(
+                (col('REPORTING_DT') == str_rptng_mnth_dt) &
+                (col('JOB_STATUS') == "FLS_BYODSUCCESS")
+            )
+            print("----Delhi----")
+            logger.info("Job inst dataframe filtered successfully.")
+            row_loadid_count = loadid_dt_dataframe.count()
+            # logger.info(
+            #     "Job inst dataframe row count: {}".format(row_loadid_count))
+
+            # Extract job details
+            c_co_loadid = loadid_dt_dataframe.select('JOB_ID').first()[0]
+            c_co_loadid_str = str(c_co_loadid)
+            c_co_loadcd = loadid_dt_dataframe.select('JOB_CD').first()[0]
+            c_co_loadcd_str = str(c_co_loadcd)
+            c_column = loadid_dt_dataframe.select('REPORTING_DT').first()[0]
+            print("----BLR----")
+            # Prepare SQL statements for updating and deleting records
+            str_upd_sts_active = (
+                "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBX_ACTIVE' "
+                "WHERE JOB_ID = {loadid_var}".format(
+                    ctg=catlog, loadid_var=c_co_loadid_str)
+            )
+
+            print(str_upd_sts_active)
+            str_del_sql = (
+                "DELETE FROM {ctg}.fdi_refined_amfin_ops_schema.job_errors WHERE JOB_ID == {loadid_var}"
+                .format(ctg=catlog, loadid_var=c_co_loadid_str)
+            )
+            print(str_del_sql)
+            str_del_srcdata_sql = (
+                "UPDATE {ctg}.fdi_refined_amfin_fe_schema.fe_cib_invoice_trnsfmd SET ACTIVE_FLAG = 'N' "
+                "WHERE JOB_ID = {loadid_var}".format(
+                    ctg=catlog, loadid_var=c_co_loadid_str)
+            )
+
+            # Debugging: Print the values
+            print(f"c_co_loadid_str: {c_co_loadid_str}, c_co_loadcd_str: {c_co_loadcd_str}")
+
+            # Execute SQL statements if there is exactly one job instance
+            if row_loadid_count == 1:
+                logger.info("Configuring Spark session.")
+                spark = SparkSession.getActiveSession()
+                logger.info("Spark session received.")
+
+                # Execute SQL statements
+                spark.sql(str_upd_sts_active)
+                logger.info("Updated job status to ACTIVE successfully.")
+                spark.sql(str_del_sql)
+                logger.info("Deleted records from Errors table successfully.")
+                spark.sql(str_del_srcdata_sql)
+                logger.info("Updated source data status to N successfully.")
+            else:
+                logger.warning("No data in error table to process.")
+        except:
+            raise
+        print("----HYD----")
+        # # Fetch source data
+        # src_dataframe = df.results.get(
+        #     'fe_cib_invoice_raw').results.get("data")
+        # Fetch source data
+        src_dataframe = df.results.get('fe_cib_invoice_raw_df').results.get("data")
+        src_dataframe = src_dataframe.withColumn("PROCESSING_MED",lit(c_column))
+        src_dataframe = src_dataframe.withColumn("JOB_ID",lit(c_co_loadid_str))
+        src_dataframe = src_dataframe.withColumn("JOB_CD",lit(c_co_loadcd_str))
+        print("----TN----")
+        # display(src_dataframe)
+        src_dataframe.printSchema()
+        logger.info("Source data dataframe created successfully.")
+        print("----LAHORE----")
+
+
+        # Fetch hierarchy data and filter for currency class
+        logger.info("Reading hierarchy data from table.")
+        hie_dataframe = spark.read.table(
+            "25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe")
+       # print("Hierarchy data read successfully.")
+        logger.info(
+            "Filtering hierarchy data for currency class 'fe_cib_ccy'.")
+        print("----CHANDIGARH----")
+        hie_dataframe_ccy_whr = hie_dataframe.where(
+            hie_dataframe.ENTITY_CLASS == "fe_cib_ccy")
+        print(hie_dataframe_ccy_whr)
+        # Join with source dataframe
+        logger.info(
+            "Joining source dataframe with filtered hierarchy data.")
+        src_dataframe.alias('src')
+        df_joined_src_ccy = src_dataframe.join(
+                hie_dataframe_ccy_whr.alias('hie_ccy'),
+                on=col('src.SUB_FUND_CCY') == col('hie_ccy.ENTITY_NM'),
+                how="left"
+            ).select(
+                'src.PROCESSING_MED', 'src.TW04_INVOICE_SECTION', 'src.TW04_INVOICE_NUMBER', 'src.TW04_INVOICE_DATE',
+                'src.TW04_INVOICE_GROUP', 'src.TW04_ACCOUNT_NUMBER', 'src.ACCOUNT_TITLE', 'src.TW04_SECURITY_LOCATION',
+                'src.ISO', 'src.TW04_TRANSACTION_TYPE', 'src.TW04_SECURITY_TYPE', 'src.TW04_BASE_MKT_VAL_VOL', 'src.TW04_RATE',
+                'src.FEE', 'src.SUB_FUND_CCY', 'src.TW04_DATE_FROM', 'src.TW04_DATE_TO', 'src.DIRECTDEBIT',
+                'src.ISSUES_CLAIMS_REF', 'src.ADMINISTRATOR', 'src.SF_DOMICILE', 'src.REALLOC_ACCT', 'src.INV_TYPE',
+                'src.REALLOC_COL', 'src.DIRECT_EXPENSE', 'src.FEECVTD_SFCCY', 'src.ECB_RATE_ORIG_SF', 'src.ECB_RATEDATE',
+                'src.ORIG_FEE', 'src.ORIG_FEECCY', 'src.INVREMIT_AMT', 'src.INVREMIT_CCY', 'src.IG_PAYER', 'src.INVGRP_DOMICILE',
+                'src.BILLING_SRC', 'src.BILLING_END_DATE', 'src.ADJ_PREVINVOICE', 'src.MAIN_BILL_ACCT', 'src.SF_SPN',
+                'src.MISSING_ODD_REALLOC', 'src.CONTRACT_PARTY', 'src.FUND_UMBRELLA', 'src.FUND_ACCTG_CODE', 'src.ECAF_OUT_FILE',
+                col('hie_ccy.ENTITY_CLASS').alias('ccy_Ref_Hie_Class'),
+                col('hie_ccy.ENTITY_CD').alias('ccy_Ref_Hie_Cd'),
+                col('hie_ccy.ENTITY_NM').alias('ccy_Ref_Hie_Nm'),
+                col('hie_ccy.ALT_ENTITY_CD').alias('ccy_Ref_Hie_Alt_Cd'),
+                col('hie_ccy.SRC_ENTITY_CD').alias('ccy_Ref_Hie_Src_Cd'),
+                col('hie_ccy.USER_COMMENT').alias('ccy_Ref_Hie_Cmt'),
+                col('hie_ccy.LGCL_DEL_FL').alias('ccy_Ref_Hie_Fl'),
+                col('hie_ccy.SORT_ORDER').alias('ccy_Ref_Hie_Ord'),
+                col('hie_ccy.SOURCE_SYSTEM').alias('ccy_Ref_Hie_Sys')
+            )
+        print("----join operation completed successfully.----")
+        logger.info("Join operation completed successfully.")
+
+        # Filter for error data where ccy_Ref_Hie_Cd is null
+        logger.info(
+            "Filtering joined data for rows with null 'ccy_Ref_Hie_Cd'.")
+        df_joined_err_cur_data = df_joined_src_ccy.filter(
+            df_joined_src_ccy["ccy_Ref_Hie_Cd"].isNull())
+
+        # Prepare error data for insertion
+        logger.info("Preparing error data for insertion.")
+        df_joined_err_data_cur_ins = df_joined_err_cur_data.select(
+            df_joined_err_cur_data.SUB_FUND_CCY)
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "JOB_ID", lit(c_co_loadid).cast("long"))
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "JOB_CD", lit(c_co_loadcd))
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "ROW_ID", lit(1).cast("long"))
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "ERROR_ID", lit(2).cast("long"))
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "FROW_ID", lit(123).cast("long"))
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "ERROR_RANK", lit(3))
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "ERROR_COLUMN", lit("SUB_FUND_CCY"))
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "ERROR_DESC", concat(lit(
+                "The SUB_FUND_CCY column is invalid. - "), df_joined_err_cur_data.SUB_FUND_CCY)
+        )
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
+            "CREATE_TS", F.current_date().cast("Timestamp").alias('CREATE_TS'))
+
+        # Select the necessary columns
+        logger.info("Selecting necessary columns for error data.")
+        df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.select(
+            df_joined_err_data_cur_ins.ROW_ID,
+            df_joined_err_data_cur_ins.ERROR_ID,
+            df_joined_err_data_cur_ins.JOB_ID,
+            df_joined_err_data_cur_ins.JOB_CD,
+            df_joined_err_data_cur_ins.FROW_ID,
+            df_joined_err_data_cur_ins.ERROR_RANK,
+            df_joined_err_data_cur_ins.ERROR_COLUMN,
+            df_joined_err_data_cur_ins.ERROR_DESC,
+            df_joined_err_data_cur_ins.CREATE_TS
+        )
+
+        fatal_err_count = df_joined_err_data_cur_ins.count()
+        # Write the error data to the table
+        logger.info(
+            "Writing error data to the table '25591_ctg_dev.fdi_refined_amfin_fe_schema.data_loader_errors'.")
+        # df_joined_err_data_cur_ins.write.mode("append").saveAsTable("25591_ctg_dev.fdi_refined_amfin_fe_schema.data_loader_errors")
+
+        logger.info("Error data processing completed successfully.")
+
+        # Process valid data
+        logger.info("Processing valid data from joined source data.")
+        df_joined_valid_data = df_joined_src_ccy
+
+        # Select necessary columns and rename as needed
+        logger.info(
+            "Selecting and renaming necessary columns for valid data.")
+        df_joined_valid_data = df_joined_valid_data.select(
+            df_joined_valid_data.TW04_INVOICE_SECTION,
+            df_joined_valid_data.TW04_INVOICE_NUMBER,
+            df_joined_valid_data.TW04_INVOICE_DATE,
+            df_joined_valid_data.TW04_INVOICE_GROUP,
+            df_joined_valid_data.TW04_ACCOUNT_NUMBER,
+            df_joined_valid_data.ACCOUNT_TITLE,
+            df_joined_valid_data.TW04_SECURITY_LOCATION,
+            df_joined_valid_data.ISO,
+            df_joined_valid_data.TW04_TRANSACTION_TYPE,
+            df_joined_valid_data.TW04_SECURITY_TYPE,
+            df_joined_valid_data.TW04_BASE_MKT_VAL_VOL,
+            df_joined_valid_data.TW04_RATE,
+            df_joined_valid_data.FEE,
+            df_joined_valid_data.SUB_FUND_CCY,
+            df_joined_valid_data.TW04_DATE_FROM,
+            df_joined_valid_data.TW04_DATE_TO,
+            df_joined_valid_data.DIRECTDEBIT,
+            df_joined_valid_data.ISSUES_CLAIMS_REF,
+            df_joined_valid_data.ADMINISTRATOR,
+            df_joined_valid_data.SF_DOMICILE,
+            df_joined_valid_data.REALLOC_ACCT,
+            df_joined_valid_data.INV_TYPE,
+            df_joined_valid_data.REALLOC_COL,
+            df_joined_valid_data.DIRECT_EXPENSE,
+            df_joined_valid_data.FEECVTD_SFCCY,
+            df_joined_valid_data.ECB_RATE_ORIG_SF,
+            df_joined_valid_data.ECB_RATEDATE,
+            df_joined_valid_data.ORIG_FEE,
+            df_joined_valid_data.ORIG_FEECCY,
+            df_joined_valid_data.INVREMIT_AMT,
+            df_joined_valid_data.INVREMIT_CCY,
+            df_joined_valid_data.IG_PAYER,
+            df_joined_valid_data.INVGRP_DOMICILE,
+            df_joined_valid_data.BILLING_SRC,
+            df_joined_valid_data.BILLING_END_DATE,
+            df_joined_valid_data.ADJ_PREVINVOICE,
+            df_joined_valid_data.MAIN_BILL_ACCT,
+            df_joined_valid_data.SF_SPN,
+            df_joined_valid_data.MISSING_ODD_REALLOC,
+            df_joined_valid_data.CONTRACT_PARTY,
+            df_joined_valid_data.FUND_UMBRELLA,
+            df_joined_valid_data.FUND_ACCTG_CODE,
+            df_joined_valid_data.ECAF_OUT_FILE,
+            df_joined_valid_data.PROCESSING_MED.alias('MONTH_END_DT'),
+            df_joined_valid_data.ccy_Ref_Hie_Cd.alias('T_SUB_FUND_CCY')
+        )
+
+        # Add additional columns
+        logger.info("Adding additional columns to valid data.")
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "CREATED_TS", F.current_date().cast("Timestamp").alias('CREATED_TS'))
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "UPDATE_TS", F.current_date().cast("Timestamp").alias('UPDATE_TS'))
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "CREATED_BY", lit("SYSTEM"))
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "UPDATED_BY", lit("SYSTEM"))
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "ACTIVE_FLAG", lit("Y"))
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "JOB_ID", lit(c_co_loadid).cast("long"))
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "JOB_CD", lit(c_co_loadcd))
+        df_joined_valid_data = df_joined_valid_data.withColumn(
+            "FROW_ID", lit(1).cast("long"))
+
+        logger.info("Valid data processing completed successfully.")
+
+        display(df_joined_valid_data)
+
+        # Select necessary columns for the final valid data
+        logger.info("Selecting final set of columns for valid data.")
+        df_joined_valid_data = df_joined_valid_data.select(
+            df_joined_valid_data.JOB_ID,
+            df_joined_valid_data.JOB_CD,
+            df_joined_valid_data.FROW_ID,
+            df_joined_valid_data.TW04_INVOICE_SECTION,
+            df_joined_valid_data.TW04_INVOICE_NUMBER.cast("long").alias("TW04_INVOICE_NUMBER"),
+            df_joined_valid_data.TW04_INVOICE_DATE,
+            df_joined_valid_data.TW04_INVOICE_GROUP,
+            df_joined_valid_data.TW04_ACCOUNT_NUMBER,
+            df_joined_valid_data.ACCOUNT_TITLE,
+            df_joined_valid_data.TW04_SECURITY_LOCATION,
+            df_joined_valid_data.ISO,
+            df_joined_valid_data.TW04_TRANSACTION_TYPE,
+            df_joined_valid_data.TW04_SECURITY_TYPE,
+            df_joined_valid_data.TW04_BASE_MKT_VAL_VOL.cast("long").alias("TW04_BASE_MKT_VAL_VOL"),
+            df_joined_valid_data.TW04_RATE.cast("decimal(31,2)").alias("TW04_RATE"),
+            df_joined_valid_data.FEE.cast("decimal(31,2)").alias("FEE"),
+            df_joined_valid_data.SUB_FUND_CCY,
+            df_joined_valid_data.TW04_DATE_FROM,
+            df_joined_valid_data.TW04_DATE_TO,
+            df_joined_valid_data.DIRECTDEBIT,
+            df_joined_valid_data.ISSUES_CLAIMS_REF,
+            df_joined_valid_data.ADMINISTRATOR,
+            df_joined_valid_data.SF_DOMICILE,
+            df_joined_valid_data.REALLOC_ACCT.cast("long").alias("REALLOC_ACCT"),
+            df_joined_valid_data.INV_TYPE,
+            df_joined_valid_data.REALLOC_COL,
+            df_joined_valid_data.DIRECT_EXPENSE,
+            df_joined_valid_data.FEECVTD_SFCCY,
+            df_joined_valid_data.ECB_RATE_ORIG_SF.cast("long").alias("ECB_RATE_ORIG_SF"),
+            df_joined_valid_data.ECB_RATEDATE,
+            df_joined_valid_data.ORIG_FEE.cast("decimal(31,2)").alias("ORIG_FEE"),
+            df_joined_valid_data.ORIG_FEECCY,
+            df_joined_valid_data.INVREMIT_AMT.cast("decimal(31,2)").alias("INVREMIT_AMT"),
+            df_joined_valid_data.INVREMIT_CCY,
+            df_joined_valid_data.IG_PAYER,
+            df_joined_valid_data.INVGRP_DOMICILE,
+            df_joined_valid_data.BILLING_SRC,
+            df_joined_valid_data.BILLING_END_DATE,
+            df_joined_valid_data.ADJ_PREVINVOICE.cast("decimal(31,2)").alias("ADJ_PREVINVOICE"),
+            df_joined_valid_data.MAIN_BILL_ACCT.cast("decimal(31,2)").alias("MAIN_BILL_ACCT"),
+            df_joined_valid_data.SF_SPN.cast("long").alias("SF_SPN"),
+            df_joined_valid_data.MISSING_ODD_REALLOC.cast("decimal(31,2)").alias("MISSING_ODD_REALLOC"),
+            df_joined_valid_data.CONTRACT_PARTY,
+            df_joined_valid_data.FUND_UMBRELLA,
+            df_joined_valid_data.FUND_ACCTG_CODE,
+            df_joined_valid_data.ECAF_OUT_FILE,
+            df_joined_valid_data.MONTH_END_DT,
+            df_joined_valid_data.T_SUB_FUND_CCY,
+            df_joined_valid_data.CREATED_BY,
+            df_joined_valid_data.CREATED_TS,
+            df_joined_valid_data.UPDATED_BY,
+            df_joined_valid_data.UPDATE_TS,
+            df_joined_valid_data.ACTIVE_FLAG
+        )
+
+        logger.info(
+            "Final selection of columns for valid data completed successfully.")
+
+        # display(df_joined_valid_data)
+        df_joined_valid_data.printSchema()
+        # Write the valid data to the target table
+        # df_joined_valid_data.write.mode("append").saveAsTable(
+        #     "25591_ctg_dev.fdi_refined_amfin_fe_schema.fe_cib_invoice_trnsfmd")
+        logging.info(
+            "Valid data written to the fe_cib_invoice_trnsfmd table successfully.")
+
+        # Assign the valid data to the result DataFrame
+        result_df = df_joined_valid_data
+
+        # Print the count of the result DataFrame (for debugging purposes)
+        # Print the count of the result DataFrame (for debugging purposes)
+        # print(result_df.count())
+
+        # Check if there are any fatal errors and update the job status accordingly
+        try:
+            if fatal_err_count == 0:
+                # Update the job status to success if there are no fatal errors
+                str_upd_sts_sucss = (
+                    "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBX_LOADSUCESS' "
+                    "WHERE JOB_ID = {loadid_var}".format(
+                        ctg=catlog, loadid_var=c_co_loadid_str)
+                )
+                spark.sql(str_upd_sts_sucss)
+                logger.info("Updated job status to success successfully.")
+            else:
+                # Write the error data to the job_errors table if there are fatal errors
+                df_joined_err_data_cur_ins.write.mode("append").saveAsTable(
+                    "{ctg}.fdi_refined_amfin_ops_schema.job_errors".format(ctg=catlog))
+                logging.info(
+                    "Error data written to the job_errors table successfully.")
+
+                # Update the job status to error if there are fatal errors
+                str_upd_sts_sucss = (
+                    "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBX_VALIDERR', "
+                    "SRC_FATAL_COUNT = {fatal_err} WHERE JOB_ID = {loadid_var}".format(
+                        ctg=catlog, loadid_var=c_co_loadid_str, fatal_err=fatal_err_count)
+                )
+                spark.sql(str_upd_sts_sucss)
+                logger.info("Updated job status to error successfully.")
+        # Handle any exceptions that occur during the process
+        except Exception as e:
+            logger.error("An error occurred: %s", e)
+
+            # Update the job status to failure in case of an exception
+            str_upd_sts_fail = (
+                "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBXFAIL' "
+                "WHERE JOB_ID = {loadid_var}".format(
+                    ctg=catlog, loadid_var=c_co_loadid_str)
+            )
+            spark.sql(str_upd_sts_fail)
+            logger.error(
+                "Updated job status to failure due to an exception.")
+
+        # Return the result DataFrame
+
+        return result_df
+
+
+
+
+
+TW04_INVOICE_SECTION,TW04_INVOICE_NUMBER,TW04_INVOICE_DATE,TW04_INVOICE_GROUP,TW04_ACCOUNT_NUMBER,ACCOUNT_TITLE,TW04_SECURITY_LOCATION,ISO,TW04_TRANSACTION_TYPE,TW04_SECURITY_TYPE,TW04_BASE_MKT_VAL_VOL,TW04_RATE,FEE,SUB_FUND_CCY,TW04_DATE_FROM,TW04_DATE_TO,DIRECTDEBIT,ISSUES_CLAIMS_REF,ADMINISTRATOR,SF_DOMICILE,REALLOC_ACCT,INV_TYPE,REALLOC_COL,DIRECT_EXPENSE,FEECVTD_SFCCY,ECB_RATE_ORIG_SF,ECB_RATEDATE,ORIG_FEE,ORIG_FEECCY,INVREMIT_AMT,INVREMIT_CCY,IG_PAYER,INVGRP_DOMICILE,BILLING_SRC,BILLING_END_DATE,ADJ_PREVINVOICE,MAIN_BILL_ACCT,SF_SPN,MISSING_ODD_REALLOC,CONTRACT_PARTY,FUND_UMBRELLA,FUND_ACCTG_CODE,ECAF_OUT_FILE,__txn_id_long,__processing_time
+Account Services: Fees,1300039,20240229,JPMAM_ETF_COM,BBH4469,JPMorgan ETFs (Ireland) ICAV - Global Research Enhanced Index Equity SRI Paris Aligned UCITS ETF,"","",Compliance Reporting,"",1,338.800000000000,338.800000000000,USD,20240101,20240131,No,"",BBH-ETF,Ireland,4469,COM,Compliance_INV,"","",1,31-Jan-24,338.800000000000,USD,338.800000000000,USD,"Lux Finance - Lux, Ireland",Ireland,CIB,31-Jan-24,"",3737921.000000000000,4825228,0E-12,MANCO,JPMorgan ETFs (Ireland) ICAV,4469,LuxIE BBH ECAF,1733734016555381070,2024-12-17 08:46:58.945000
+Administrative Fees,1300042,20240229,JPMAM_COM_USD2,AEL72_COM,JPMorgan Funds - US Equity All Cap Fund,"","",Compliance Reporting,"",1,338.800000000000,338.800000000000,USD,20240101,20240131,No,"",CIB,Luxembourg,71727,COM,Compliance_INV,"","",1,31-Jan-24,338.800000000000,USD,338.800000000000,USD,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,"","",440187,0E-12,MANCO,JPMorgan Funds,71727,LuxIE CIB ECAF,1733734016555381070,2024-12-17 08:46:58.945000
+Other Related Fees: Market Value Based,1300055,20240229,JPMF_FID_EUR,86245_FID,JPMorgan Funds - Italy Flexible Bond Fund,Depositary Services Fees,"",Trustee and Fiduciary Fees,"","",0E-12,165.580000000000,EUR,20240101,20240131,No,"",CIB,Luxembourg,86245,FID,Fiduciary_INV,"","",1,31-Jan-24,165.580000000000,EUR,165.580000000000,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,0E-12,86245.000000000000,106847,0E-12,FUND,JPMorgan Funds,86245,LuxIE CIB ECAF,1733734016555381070,2024-12-17 08:46:58.945000
+Tax,1300055,20240229,JPMF_FID_EUR,ADP50_FID,JPMorgan Funds - Europe Equity Absolute Alpha Fund,"","",Value Added Tax,"","",0.140000000000,229.300000000000,EUR,20240101,20240131,No,"",CIB,Luxembourg,71670,FID,FiduciaryVAT_INV,"","",1,31-Jan-24,229.300000000000,EUR,229.300000000000,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,"","",411318,0E-12,FUND,JPMorgan Funds,71670,LuxIE CIB ECAF,1733734016555381070,2024-12-17 08:46:58.945000
+Tax,1300055,20240229,JPMF_FID_EUR,ETB12_FID,JPMorgan Funds - Europe Sustainable Small Cap Equity Fund,"","",Value Added Tax,"","",0.140000000000,180.740000000000,EUR,20240101,20240131,No,"",CIB,Luxembourg,501472,FID,FiduciaryVAT_INV,"","",1,31-Jan-24,180.740000000000,EUR,180.740000000000,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,"","",2319256,0E-12,FUND,JPMorgan Funds,501472,LuxIE CIB ECAF,1733734016555381070,2024-12-17 08:46:58.945000
+
+
+LGCL_DEL_FL,SORT_ORDER,SOURCE_SYSTEM,CREATED_BY,CREATE_TS,UPDATED_BY,UPDATE_TS,APPROVED_BY,APPROVE_TS,PROCESSED_TS,SYNC_TS
+fe_cib_sicav,FE_CIB_FND1,GIM Global Convertibles Fund,FE_CIB_FND1,FE_CIB_FND1,seeding from PG,N,1,SYSTEM,SYSTEM,2024-10-09 00:00:00.000000,SYSTEM,2024-10-09 00:00:00.000000,SYSTEM,2024-10-09 00:00:00.000000,2024-10-09 00:00:00.000000,2024-10-09 00:00:00.000000
+fe_cib_sicav,FE_CIB_FND2,GIM Portfolio Strategies Funds,FE_CIB_FND2,FE_CIB_FND2,seeding from PG,N,1,SYSTEM,SYSTEM,2024-10-09 00:00:00.000000,SYSTEM,2024-10-09 00:00:00.000000,SYSTEM,2024-10-09 00:00:00.000000,2024-10-09 00:00:00.000000,2024-10-09 00:00:00.000000
+fe_cib_sicav,FE_CIB_FND3,GIM Specialist Investment Funds,FE_CIB_FND3,FE_CIB_FND3,se
+
+
+JOB_ID,JOB_CD,JOB_STATUS,REPORTING_DT,BYOD_KEY,PREVAL_KEY,PAYLOAD_TMPLT,PAYLOAD_EXECUTED,BYOD_FILE_PATH,BYOD_FILE_NAME,APP_FILE_PATH,APP_FILE_NAME,SRC_ROWS_COUNT,SRC_ERRORS_COUNT,SRC_WARN_COUNT,SRC_FATAL_COUNT,SRC_BAD_ROW_COUNT,SRC_REJECT_COUNT,COMMENTS,CREATED_BY,CREATE_TS,UPLOADED_BY,UPLOAD_TS,UPDATED_BY,UPDATE_TS,APPROVED_BY,APPROVED_TS
+10008,SRC_FE_CIB_INVOICE,FLS_BYODSUCCESS,2024-05-31 00:00:00.000000,"","","","","","","","",0,0,0,0,0,0,"",SYSTEM,2025-02-13 00:00:00.000000,SYSTEM,2025-02-13 00:00:00.000000,SYSTEM,2025-02-13 00:00:00.000000,SYSTEM,2025-02-13 00:00:00.000000
+
+
+REPORTING_DATE,JOB_CD,LNK_MOD_CD
+2024-05-31 00:00:00.000000,FE_CIB_MNTHLY_SIGNOFF,mod_fe_cib_cntrl_signoff
+
+
+JOB_ID,JOB_CD,FROW_ID,TW04_INVOICE_SECTION,TW04_INVOICE_NUMBER,TW04_INVOICE_DATE,TW04_INVOICE_GROUP,TW04_ACCOUNT_NUMBER,ACCOUNT_TITLE,TW04_SECURITY_LOCATION,ISO,TW04_TRANSACTION_TYPE,TW04_SECURITY_TYPE,TW04_BASE_MKT_VAL_VOL,TW04_RATE,FEE,SUB_FUND_CCY,TW04_DATE_FROM,TW04_DATE_TO,DIRECTDEBIT,ISSUES_CLAIMS_REF,ADMINISTRATOR,SF_DOMICILE,REALLOC_ACCT,INV_TYPE,REALLOC_COL,DIRECT_EXPENSE,FEECVTD_SFCCY,ECB_RATE_ORIG_SF,ECB_RATEDATE,ORIG_FEE,ORIG_FEECCY,INVREMIT_AMT,INVREMIT_CCY,IG_PAYER,INVGRP_DOMICILE,BILLING_SRC,BILLING_END_DATE,ADJ_PREVINVOICE,MAIN_BILL_ACCT,SF_SPN,MISSING_ODD_REALLOC,CONTRACT_PARTY,FUND_UMBRELLA,FUND_ACCTG_CODE,ECAF_OUT_FILE,MONTH_END_DT,T_SUB_FUND_CCY,CREATED_BY,CREATED_TS,UPDATED_BY,UPDATE_TS,ACTIVE_FLAG,__txn_id_long,__START_AT,__END_AT
+10008,SRC_FE_CIB_INVOICE,1,Other Services: Flat,1300045,20240229,JPMAM_COM_EUR2,86394_COM,JPMorgan Funds - Euroland Dynamic Fund,"","",Informational Data Report,"",1,46.78,46.78,EUR,20240101,20240131,No,"",CIB,Luxembourg,86394,COM,Compliance_INV,"","",1,31-Jan-24,46.78,EUR,46.78,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,"",86394.00,9621755,0.00,MANCO,JPMorgan Funds,86394,LuxIE CIB ECAF,2024-05-31 00:00:00.000000,FE_CIB_CCY96,SYSTEM,2025-03-18 00:00:00.000000,SYSTEM,2025-03-18 00:00:00.000000,Y,1702023301000000595,2024-12-17 08:46:58.945000,""
+10008,SRC_FE_CIB_INVOICE,1,Tax,1300055,20240229,JPMF_FID_EUR,24012_FID,JPMorgan Funds - Global Convertibles Fund (EUR),"","",Value Added Tax,"","",0.14,152.50,EUR,20240101,20240131,No,"",CIB,Luxembourg,24012,FID,FiduciaryVAT_INV,"","",1,31-Jan-24,152.50,EUR,152.50,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,"",24012.00,3453235,0.00,FUND,JPMorgan Funds,24012,LuxIE CIB ECAF,2024-05-31 00:00:00.000000,FE_CIB_CCY96,SYSTEM,2025-03-18 00:00:00.000000,SYSTEM,2025-03-18 00:00:00.000000,Y,1702023301000000595,2024-12-17 08:46:58.945000,""
+10008,SRC_FE_CIB_INVOICE,1,Other Services: Flat,1300085,20240229,JPMIF_CUS_EUR,8009,JPMorgan Investment Funds - Global Balanced Fund,"","",CDP Off-Market Settlement Fee,"","",1.00,78.30,EUR,20240101,20240131,No,"",CIB,Luxembourg,71719,CUST,OOP_INV,"","",1,31-Jan-24,78.30,EUR,78.30,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,0.00,8009.00,2483211,0.00,FUND,JPMorgan Investment Funds,71719,LuxIE CIB ECAF,2024-05-31 00:00:00.000000,FE_CIB_CCY96,SYSTEM,2025-03-18 00:00:00.000000,SYSTEM,2025-03-18 00:00:00.000000,Y,1702023301000000595,2024-12-17 08:46:58.945000,""
+10008,SRC_FE_CIB_INVOICE,1,Transaction Fees: Volume Based,1300085,20240229,JPMIF_CUS_EUR,54576,JPMorgan Investment Funds - Global Income Fund,United Kingdom,GB,Buys/Sells,EQ,96,7.36,707.00,EUR,20240101,20240131,No,"",CIB,Luxembourg,71386,CUST,Transaction_INV,"","",1,31-Jan-24,707.00,EUR,707.00,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,"",54576.00,8976388,0.00,FUND,JPMorgan Investment Funds,71386,LuxIE CIB ECAF,2024-05-31 00:00:00.000000,FE_CIB_CCY96,SYSTEM,2025-03-18 00:00:00.000000,SYSTEM,2025-03-18 00:00:00.000000,Y,1702023301000000595,2024-12-17 08:46:58.945000,""
+10008,SRC_FE_CIB_INVOICE,1,Cash Movement Fees: Fees,1300085,20240229,JPMIF_CUS_EUR,54576,JPMorgan Investment Funds - Global Income Fund,Custody Mgmt,"",CPLX CCY Inter Acc TRF Dr,"",1,3.22,3.22,EUR,20240101,20240131,No,"",CIB,Luxembourg,71386,CUST,Transaction_INV,"","",1,31-Jan-24,3.22,EUR,3.22,EUR,"Lux Finance - Lux, Ireland",Luxembourg,CIB,31-Jan-24,"",54576.00,8976388,0.00,FUND,JPMorgan Investment Funds,71386,LuxIE CIB ECAF,2024-05-31 00:00:00.000000,FE_CIB_CCY96,SYSTEM,2025-03-18 00:00:00.000000,SYSTEM,2025-03-18 00:00:00.000000,Y,1702023301000000595,2024-12-17 08:46:58.945000,""
+
+
+
+
+import pytest
+from unittest.mock import patch, MagicMock
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.functions import col
+from builtins import set
+from pyspark.sql.types import StructType, StructField, StringType, DateType
+from everest_pipeline_sdk.base.pipeline_results import PipelineResult, PipelineDataSetResult
+from src.amimafinanceaws_everest2_transformation_derivation_fe_cib.transformations.fe_cib_invoice_trnsfmd import feCibInvoiceLoadTransformer
+import datetime
+
+@pytest.mark.fasttest
+@patch('src.amimafinanceaws_everest2_transformation_derivation_fe_cib.transformations.fe_cib_invoice_trnsfmd.SparkSession.getActiveSession')
+def test_fe_cib_invoice_transformer(mock_get_active_session, spark):
+    # Create a mock Spark session
+    mock_spark = MagicMock()
+    mock_get_active_session.return_value = mock_spark
+
+    # Define your variables
+    catlog = 'test_catalog'
+    c_co_loadid_str = '12345'
+    row_loadid_count = 1
+
+    # Your SQL strings
+    str_upd_sts_active = (
+        "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBX_ACTIVE' "
+        "WHERE JOB_ID = {loadid_var}".format(
+            ctg=catlog, loadid_var=c_co_loadid_str)
+    )
+
+    str_del_sql = (
+        "DELETE FROM {ctg}.fdi_refined_amfin_ops_schema.job_errors WHERE JOB_ID == {loadid_var}"
+        .format(ctg=catlog, loadid_var=c_co_loadid_str)
+    )
+
+    str_del_srcdata_sql = (
+        "UPDATE {ctg}.fdi_refined_amfin_fe_schema.fe_cib_invoice_trnsfmd SET ACTIVE_FLAG = 'N' "
+        "WHERE JOB_ID = {loadid_var}".format(
+            ctg=catlog, loadid_var=c_co_loadid_str)
+    )
+    # Create mock DataFrames with the necessary columns
+    job_signoff_schema = StructType([
+        StructField("REPORTING_DATE", DateType(), True)
+    ])
+    job_inst_schema = StructType([
+        StructField("REPORTING_DT", StringType(), True),
+        StructField("JOB_STATUS", StringType(), True),
+        StructField("JOB_ID", StringType(), True),
+        StructField("JOB_CD", StringType(), True)
+    ])
+    fe_cib_invoice_raw_schema = StructType([
+        StructField("SUB_FUND_CCY", StringType(), True)
+    ])
+    hrchy_entity_inst_fe_schema = StructType([
+        StructField("ENTITY_CLASS", StringType(), True),
+        StructField("ENTITY_NM", StringType(), True)
+    ])
+
+    job_signoff_df = spark.createDataFrame(
+        [Row(REPORTING_DATE=datetime.date(2025, 3, 1))], job_signoff_schema)
+    job_inst_df = spark.createDataFrame(
+        [Row(REPORTING_DT='2025-03-01', JOB_STATUS='FLS_BYODSUCCESS', JOB_ID='10008', JOB_CD='SRC_FE_CIB_INVOICE')], job_inst_schema)
+    fe_cib_invoice_raw_df = spark.createDataFrame(
+        [Row(SUB_FUND_CCY='USD')], fe_cib_invoice_raw_schema)
+    hrchy_entity_inst_fe_df = spark.createDataFrame(
+        [Row(ENTITY_CLASS='fe_cib_ccy', ENTITY_NM='USD')], hrchy_entity_inst_fe_schema)
+
+    # Read input files
+    job_signoff_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/inputfiles/job_signoff.csv")
+    job_inst_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/inputfiles/job_inst_cib_invoice.csv")
+    fe_cib_invoice_raw_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/inputfiles/fe_cib_invoice_raw.csv")
+    hrchy_entity_inst_fe_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/inputfiles/hrchy_entity_inst_fe.csv")
+
+    # Ensure DataFrames are not empty
+    assert job_signoff_df is not None, "job_signoff_df is not loaded"
+    assert job_inst_df is not None, "job_inst_df is not loaded"
+    assert fe_cib_invoice_raw_df is not None, "fe_cib_invoice_raw_df is not loaded"
+    assert hrchy_entity_inst_fe_df is not None, "hrchy_entity_inst_fe_df is not loaded"
+
+    # Create a PipelineResult object with the mock data
+    input_df = PipelineResult() \
+        .add_data_set(PipelineDataSetResult('job_signoff_df').add_data(job_signoff_df)) \
+        .add_data_set(PipelineDataSetResult('job_inst_df').add_data(job_inst_df)) \
+        .add_data_set(PipelineDataSetResult('fe_cib_invoice_raw_df').add_data(fe_cib_invoice_raw_df)) \
+        .add_data_set(PipelineDataSetResult('hrchy_entity_inst_fe_df').add_data(hrchy_entity_inst_fe_df))
+
+
+    # Perform join as in the original code
+    df_joined_src_ccy = fe_cib_invoice_raw_df.alias('src').join(
+        hrchy_entity_inst_fe_df.alias('hie_ccy'),
+        on=col('src.SUB_FUND_CCY') == col('hie_ccy.ENTITY_NM'),
+        how="left"
+    ).select(
+        col('src.PROCESSING_MED'), col('src.TW04_INVOICE_SECTION'),
+        col('hie_ccy.ENTITY_CD').alias('ccy_Ref_Hie_Cd')
+    )
+
+    # Assert output is not empty
+    assert df_joined_src_ccy.count() > 0, "Join operation returned empty DataFrame"
+
+    # Validate expected columns exist
+    expected_columns = {'PROCESSING_MED', 'TW04_INVOICE_SECTION', 'ccy_Ref_Hie_Cd'}
+    assert expected_columns.issubset(set(df_joined_src_ccy.columns)), "Missing expected columns"
+
+    with patch.object(SparkSession, 'read', return_value=MagicMock()) as mock_read:
+        fe_cib_invoice_raw_df = mock_read.csv("tests/unit/inputfiles/fe_cib_invoice_raw.csv")
+
+        with patch.object(fe_cib_invoice_raw_df, 'join', return_value=MagicMock()) as mock_join:
+            result = fe_cib_invoice_raw_df.join(MagicMock(), on="SUB_FUND_CCY", how="left")
+            assert mock_join.called, "Join was not executed"
+
+    # 
+    # with patch.object(fe_cib_invoice_raw_df, 'join', return_value=MagicMock()) as mock_join, \
+    #         patch.object(spark.read, 'table', return_value=hrchy_entity_inst_fe_df) as mock_table:
+    # 
+    # 
+    #     hie_dataframe_ccy_whr = hrchy_entity_inst_fe_df.where(hrchy_entity_inst_fe_df.ENTITY_CLASS == "fe_cib_ccy")
+        # Instantiate the transformer and execute the transformation
+        transformer = feCibInvoiceLoadTransformer()
+        result_df = transformer.execute_transformer(input_df, "25591_ctg_dev")
+
+        # Ensure the transformation result is not None
+        assert result_df is not None, "Transformation result is None"
+
+        # Debug: Print result_df to ensure it's correctly populated
+        print("Result DataFrame:")
+        result_df.show()
+
+        # Read expected output file
+        expected_output_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/outputfiles/fe_cib_invoice_trnsfmd.csv")
+
+        # Compare the final DataFrame with the expected output
+        subtract_df = result_df.subtract(expected_output_df)
+        assert subtract_df.count() == 0, "The final DataFrame does not match the expected output"
+
+    # Simulate the logic
+    if row_loadid_count == 1:
+        # Execute SQL statements
+        mock_spark.sql(str_upd_sts_active)
+        mock_spark.sql(str_del_sql)
+        mock_spark.sql(str_del_srcdata_sql)
+
+    # Assert that the SQL methods were called with the correct queries
+    mock_spark.sql.assert_any_call(str_upd_sts_active)
+    mock_spark.sql.assert_any_call(str_del_sql)
+    mock_spark.sql.assert_any_call(str_del_srcdata_sql)
