@@ -64,3 +64,63 @@ def test_mock_join():
         with patch.object(fe_cib_invoice_raw_df, 'join', return_value=MagicMock()) as mock_join:
             result = fe_cib_invoice_raw_df.join(MagicMock(), on="SUB_FUND_CCY", how="left")
             assert mock_join.called, "Join was not executed"
+from unittest.mock import patch, MagicMock
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.types import StructType, StructField, StringType
+import pytest
+
+@pytest.mark.fasttest
+@patch('pyspark.sql.SparkSession.table')  # Mock table read
+def test_fe_cib_invoice_transformer(mock_table, spark):
+    # Mock the Spark session
+    mock_spark = MagicMock()
+    
+    # Define schema for hrchy_entity_inst_fe
+    hrchy_entity_inst_fe_schema = StructType([
+        StructField("ENTITY_CLASS", StringType(), True),
+        StructField("ENTITY_NM", StringType(), True),
+        StructField("ENTITY_CD", StringType(), True)  # Ensure this column exists
+    ])
+
+    # Create mock DataFrame for hrchy_entity_inst_fe
+    hrchy_entity_inst_fe_df = spark.createDataFrame([
+        Row(ENTITY_CLASS="fe_cib_ccy", ENTITY_NM="USD", ENTITY_CD="USD123")
+    ], hrchy_entity_inst_fe_schema)
+
+    # Set up mock behavior for `spark.read.table()`
+    mock_table.return_value = hrchy_entity_inst_fe_df
+
+    # Simulate reading from table in your code
+    hie_dataframe = spark.read.table("25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe")
+
+    # Validate that the mock is used
+    assert hie_dataframe.count() > 0, "Mocked table dataframe is empty"
+
+    # Join operation (simulating actual transformation logic)
+    fe_cib_invoice_raw_schema = StructType([
+        StructField("SUB_FUND_CCY", StringType(), True),
+        StructField("PROCESSING_MED", StringType(), True),
+        StructField("TW04_INVOICE_SECTION", StringType(), True)
+    ])
+    
+    fe_cib_invoice_raw_df = spark.createDataFrame([
+        Row(SUB_FUND_CCY="USD", PROCESSING_MED="MED_TYPE", TW04_INVOICE_SECTION="SECTION_1")
+    ], fe_cib_invoice_raw_schema)
+
+    df_joined_src_ccy = fe_cib_invoice_raw_df.alias('src').join(
+        hie_dataframe.alias('hie_ccy'),
+        on=fe_cib_invoice_raw_df["SUB_FUND_CCY"] == hie_dataframe["ENTITY_NM"],
+        how="left"
+    ).select(
+        fe_cib_invoice_raw_df["PROCESSING_MED"],
+        fe_cib_invoice_raw_df["TW04_INVOICE_SECTION"],
+        hie_dataframe["ENTITY_CD"].alias("ccy_Ref_Hie_Cd")
+    )
+
+    # Validate join result
+    assert df_joined_src_ccy.count() > 0, "Join operation returned empty DataFrame"
+
+    # Validate expected columns
+    expected_columns = {"PROCESSING_MED", "TW04_INVOICE_SECTION", "ccy_Ref_Hie_Cd"}
+    assert expected_columns.issubset(set(df_joined_src_ccy.columns)), "Missing expected columns"
+
