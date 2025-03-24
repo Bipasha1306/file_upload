@@ -1,114 +1,68 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from pyspark.sql import SparkSession, Row
-from pyspark.sql.functions import col ,lit
-from builtins import set
+from pyspark.sql.functions import col
 from pyspark.sql.types import StructType, StructField, StringType, DateType
 from everest_pipeline_sdk.base.pipeline_results import PipelineResult, PipelineDataSetResult
 from src.amimafinanceaws_everest2_transformation_derivation_fe_cib.transformations.fe_cib_invoice_trnsfmd import feCibInvoiceLoadTransformer
 import datetime
 
 @pytest.mark.fasttest
-@patch('src.amimafinanceaws_everest2_transformation_derivation_fe_cib.transformations.fe_cib_invoice_trnsfmd.SparkSession.getActiveSession')
 @patch('pyspark.sql.SparkSession.table')
-def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session, spark):
-    # Create a mock Spark session
+@patch('src.amimafinanceaws_everest2_transformation_derivation_fe_cib.transformations.fe_cib_invoice_trnsfmd.SparkSession.getActiveSession')
+def test_fe_cib_invoice_transformer(mock_get_active_session, mock_table, spark):
     mock_spark = MagicMock()
     mock_get_active_session.return_value = mock_spark
     
-
-    # Define your variables
     catlog = 'test_catalog'
     c_co_loadid_str = '12345'
     row_loadid_count = 1
-
-    # Your SQL strings
+    
     str_upd_sts_active = (
         "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBX_ACTIVE' "
         "WHERE JOB_ID = {loadid_var}".format(
             ctg=catlog, loadid_var=c_co_loadid_str)
     )
-
+    
     str_del_sql = (
-        "DELETE FROM {ctg}.fdi_refined_amfin_ops_schema.job_errors WHERE JOB_ID == {loadid_var}"
-        .format(ctg=catlog, loadid_var=c_co_loadid_str)
+        "DELETE FROM {ctg}.fdi_refined_amfin_ops_schema.job_errors WHERE JOB_ID == {loadid_var}".format(
+            ctg=catlog, loadid_var=c_co_loadid_str)
     )
-
+    
     str_del_srcdata_sql = (
         "UPDATE {ctg}.fdi_refined_amfin_fe_schema.fe_cib_invoice_trnsfmd SET ACTIVE_FLAG = 'N' "
         "WHERE JOB_ID = {loadid_var}".format(
             ctg=catlog, loadid_var=c_co_loadid_str)
     )
-    # Create mock DataFrames with the necessary columns
-    job_signoff_schema = StructType([
-        StructField("REPORTING_DATE", DateType(), True)
-    ])
-    job_inst_schema = StructType([
-        StructField("REPORTING_DT", StringType(), True),
-        StructField("JOB_STATUS", StringType(), True),
-        StructField("JOB_ID", StringType(), True),
-        StructField("JOB_CD", StringType(), True)
-    ])
-    fe_cib_invoice_raw_schema = StructType([
-        StructField("SUB_FUND_CCY", StringType(), True)
-    ])
-    hrchy_entity_inst_fe_schema = StructType([
-        StructField("ENTITY_CLASS", StringType(), True),
-        StructField("ENTITY_NM", StringType(), True)
-    ])
-
-    job_signoff_df = spark.createDataFrame(
-        [Row(REPORTING_DATE=datetime.date(2025, 3, 1))], job_signoff_schema)
-    job_inst_df = spark.createDataFrame(
-        [Row(REPORTING_DT='2025-03-01', JOB_STATUS='FLS_BYODSUCCESS', JOB_ID='10008', JOB_CD='SRC_FE_CIB_INVOICE')], job_inst_schema)
-    fe_cib_invoice_raw_df = spark.createDataFrame(
-        [Row(SUB_FUND_CCY='USD')], fe_cib_invoice_raw_schema)
-
-    # Read input files
-    job_signoff_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/inputfiles/job_signoff.csv")
-    job_inst_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/inputfiles/job_inst_cib_invoice.csv")
-    fe_cib_invoice_raw_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/inputfiles/fe_cib_invoice_raw.csv")
-
-    # Ensure DataFrames are not empty
-    assert job_signoff_df is not None, "job_signoff_df is not loaded"
-    assert job_inst_df is not None, "job_inst_df is not loaded"
-    assert fe_cib_invoice_raw_df is not None, "fe_cib_invoice_raw_df is not loaded"
-
-    # Create a PipelineResult object with the mock data
-    input_df = PipelineResult() \
-        .add_data_set(PipelineDataSetResult('job_signoff_df').add_data(job_signoff_df)) \
-        .add_data_set(PipelineDataSetResult('job_inst_df').add_data(job_inst_df)) \
-        .add_data_set(PipelineDataSetResult('fe_cib_invoice_raw_df').add_data(fe_cib_invoice_raw_df))
-
-    # Define schema for hrchy_entity_inst_fe
+    
     hrchy_entity_inst_fe_schema = StructType([
         StructField("ENTITY_CLASS", StringType(), True),
         StructField("ENTITY_NM", StringType(), True),
-        StructField("ENTITY_CD", StringType(), True)  # Ensure this column exists
+        StructField("ENTITY_CD", StringType(), True)
     ])
     
-    # Create mock DataFrame for hrchy_entity_inst_fe
     hrchy_entity_inst_fe_df = spark.createDataFrame([
         Row(ENTITY_CLASS="fe_cib_ccy", ENTITY_NM="USD", ENTITY_CD="USD123")
     ], hrchy_entity_inst_fe_schema)
     
-    # Set up mock behavior for `spark.read.table()`
     mock_table.return_value = hrchy_entity_inst_fe_df
     
-    # Simulate reading from table in your code
-    hie_dataframe = mock_spark.table("25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe")
-
-    # Join operation (simulating actual transformation logic)
+    hie_dataframe = spark.table("25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe")
+    print("hie_dataframe preview:")
+    hie_dataframe.show()
+    
+    assert hie_dataframe.count() > 0, "Hierarchy DataFrame is empty"
+    
     fe_cib_invoice_raw_schema = StructType([
         StructField("SUB_FUND_CCY", StringType(), True),
         StructField("PROCESSING_MED", StringType(), True),
         StructField("TW04_INVOICE_SECTION", StringType(), True)
     ])
-
+    
     fe_cib_invoice_raw_df = spark.createDataFrame([
         Row(SUB_FUND_CCY="USD", PROCESSING_MED="MED_TYPE", TW04_INVOICE_SECTION="SECTION_1")
     ], fe_cib_invoice_raw_schema)
-
+    
     df_joined_src_ccy = fe_cib_invoice_raw_df.alias('src').join(
         hie_dataframe.alias('hie_ccy'),
         on=fe_cib_invoice_raw_df["SUB_FUND_CCY"] == hie_dataframe["ENTITY_NM"],
@@ -118,60 +72,34 @@ def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session, spark):
         fe_cib_invoice_raw_df["TW04_INVOICE_SECTION"],
         hie_dataframe["ENTITY_CD"].alias("ccy_Ref_Hie_Cd")
     )
-
-    # Validate join result
+    
+    print("df_joined_src_ccy preview:")
+    df_joined_src_ccy.show()
+    
     assert df_joined_src_ccy.count() > 0, "Join operation returned empty DataFrame"
-
-    # Validate expected columns
-    expected_columns = {"PROCESSING_MED", "TW04_INVOICE_SECTION", "ccy_Ref_Hie_Cd"}
-    assert expected_columns.issubset(set(df_joined_src_ccy.columns)), "Missing expected columns"
-
-    # Assert output is not empty
-    assert df_joined_src_ccy.count() > 0, "Join operation returned empty DataFrame"
-
-    # Validate expected columns exist
-    expected_columns = {'PROCESSING_MED', 'TW04_INVOICE_SECTION', 'ccy_Ref_Hie_Cd'}
-    assert expected_columns.issubset(set(df_joined_src_ccy.columns)), "Missing expected columns"
-
-    with patch.object(SparkSession, 'read', return_value=MagicMock()) as mock_read:
-        fe_cib_invoice_raw_df = mock_read.csv("tests/unit/inputfiles/fe_cib_invoice_raw.csv")
-
-        with patch.object(fe_cib_invoice_raw_df, 'join', return_value=MagicMock()) as mock_join:
-            result = fe_cib_invoice_raw_df.join(MagicMock(), on="SUB_FUND_CCY", how="left")
-            assert mock_join.called, "Join was not executed"
-
-    # 
-    # with patch.object(fe_cib_invoice_raw_df, 'join', return_value=MagicMock()) as mock_join, \
-    #         patch.object(spark.read, 'table', return_value=hrchy_entity_inst_fe_df) as mock_table:
-    # 
-    # 
-    #     hie_dataframe_ccy_whr = hrchy_entity_inst_fe_df.where(hrchy_entity_inst_fe_df.ENTITY_CLASS == "fe_cib_ccy")
-        # Instantiate the transformer and execute the transformation
-        transformer = feCibInvoiceLoadTransformer()
-        result_df = transformer.execute_transformer(input_df, "25591_ctg_dev")
-
-        # Ensure the transformation result is not None
-        assert result_df is not None, "Transformation result is None"
-
-        # Debug: Print result_df to ensure it's correctly populated
-        print("Result DataFrame:")
-        result_df.show()
-
-        # Read expected output file
-        expected_output_df = spark.read.options(header=True).options(delimiter=",").csv("tests/unit/outputfiles/fe_cib_invoice_trnsfmd.csv")
-
-        # Compare the final DataFrame with the expected output
-        subtract_df = result_df.subtract(expected_output_df)
-        assert subtract_df.count() == 0, "The final DataFrame does not match the expected output"
-
-    # Simulate the logic
+    assert "ccy_Ref_Hie_Cd" in df_joined_src_ccy.columns, "Missing expected column 'ccy_Ref_Hie_Cd'"
+    
+    input_df = PipelineResult() \
+        .add_data_set(PipelineDataSetResult('fe_cib_invoice_raw_df').add_data(fe_cib_invoice_raw_df))
+    
+    transformer = feCibInvoiceLoadTransformer()
+    result_df = transformer.execute_transformer(input_df, "25591_ctg_dev")
+    
+    assert result_df is not None, "Transformation result is None"
+    print("Result DataFrame preview:")
+    result_df.show()
+    
+    expected_output_df = spark.read.options(header=True).options(delimiter=",")\
+        .csv("tests/unit/outputfiles/fe_cib_invoice_trnsfmd.csv")
+    
+    subtract_df = result_df.subtract(expected_output_df)
+    assert subtract_df.count() == 0, "The final DataFrame does not match the expected output"
+    
     if row_loadid_count == 1:
-        # Execute SQL statements
         mock_spark.sql(str_upd_sts_active)
         mock_spark.sql(str_del_sql)
         mock_spark.sql(str_del_srcdata_sql)
-
-    # Assert that the SQL methods were called with the correct queries
+    
     mock_spark.sql.assert_any_call(str_upd_sts_active)
     mock_spark.sql.assert_any_call(str_del_sql)
     mock_spark.sql.assert_any_call(str_del_srcdata_sql)
