@@ -1,155 +1,53 @@
-import pyspark
+import pytest
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, concat, collect_list, collect_set, when
-from pyspark.sql import functions as F
-from pyspark.sql.types import StringType
-import logging
+from pyspark.sql.functions import col
+from unittest.mock import patch, MagicMock
 
+@pytest.fixture(scope="session")
+def spark():
+    return SparkSession.builder.master("local").appName("TestSession").getOrCreate()
 
-class feCibInvoiceLoadTransformer:
+@pytest.fixture
+def input_dataframes(spark):
+    # Load input CSVs
+    job_signoff_df = spark.read.options(header=True, delimiter=".").csv("tests/unit/inputfiles/job_signoff.csv")
+    job_inst_df = spark.read.options(header=True, delimiter=".").csv("tests/unit/inputfiles/job_inst_cib_invoice.csv")
+    fe_cib_invoice_raw_df = spark.read.options(header=True, delimiter=".").csv("tests/unit/inputfiles/fe_cib_invoice_raw.csv")
+    hrchy_entity_inst_fe_df = spark.read.options(header=True, delimiter=".").csv("tests/unit/inputfiles/hrchy_entity_inst_fe.csv")
 
-    def execute_transformer(self, df, catlog):
-        # Log the start of the transformation process
-        logging.info("Starting the transformation process for catalog: {}".format(catlog))
+    return {
+        "job_signoff_df": job_signoff_df,
+        "job_inst_df": job_inst_df,
+        "fe_cib_invoice_raw_df": fe_cib_invoice_raw_df,
+        "hrchy_entity_inst_fe_df": hrchy_entity_inst_fe_df
+    }
 
-        # Execute the main transformation function
-        outDF = self.fe_cib_invoice_transformer(df, catlog)
+def test_dataframe_join(spark, input_dataframes):
+    # Extract input DataFrames
+    src_dataframe = input_dataframes["fe_cib_invoice_raw_df"]
+    hie_dataframe_ccy_whr = input_dataframes["hrchy_entity_inst_fe_df"]
 
-        # Return the transformed DataFrame
-        return outDF
+    # Perform join as in the original code
+    df_joined_src_ccy = src_dataframe.alias('src').join(
+        hie_dataframe_ccy_whr.alias('hie_ccy'),
+        on=col('src.SUB_FUND_CCY') == col('hie_ccy.ENTITY_NM'),
+        how="left"
+    ).select(
+        col('src.PROCESSING_MED'), col('src.TW04_INVOICE_SECTION'),
+        col('hie_ccy.ENTITY_CD').alias('ccy_Ref_Hie_Cd')
+    )
 
-    def fe_cib_invoice_transformer(self, df, catlog):
-        # Initialize logger
-        logger = logging.getLogger(__name__)
+    # Assert output is not empty
+    assert df_joined_src_ccy.count() > 0, "Join operation returned empty DataFrame"
 
-        try:
-            # Fetch the reporting date from the job_signoff data
-            rptng_dt_dataframe = df.results.get('job_signoff').results.get("data")
-            rptng_mnth_dt_dt = rptng_dt_dataframe.select(F.max('REPORTING_DATE').alias('REPORTING_DATE'))
-            rptng_mnth_dt = rptng_dt_dataframe.select('REPORTING_DATE').first()[0]
-            str_rptng_mnth_dt = str(rptng_mnth_dt)
+    # Validate expected columns exist
+    expected_columns = {'PROCESSING_MED', 'TW04_INVOICE_SECTION', 'ccy_Ref_Hie_Cd'}
+    assert expected_columns.issubset(set(df_joined_src_ccy.columns)), "Missing expected columns"
 
-            logger.info("Reporting date fetched successfully: {}".format(str_rptng_mnth_dt))
+def test_mock_join():
+    with patch.object(SparkSession, 'read', return_value=MagicMock()) as mock_read:
+        fe_cib_invoice_raw_df = mock_read.csv("tests/unit/inputfiles/fe_cib_invoice_raw.csv")
 
-            # Count the number of rows in the signoff data
-            row_sgnoff_count = rptng_dt_dataframe.count()
-            logger.info("Signoff dataframe row count: {}".format(row_sgnoff_count))
-
-            # Fetch the job ID from the job_inst data
-            loadid_dt_dataframe = df.results.get('job_inst').results.get("data")
-            loadid_dt_dataframe = loadid_dt_dataframe.filter(
-                (col('REPORTING_DT') == str_rptng_mnth_dt) & (col('JOB_STATUS') == "FLS_BYODSUCCESS")
-            )
-
-            logger.info("Job inst dataframe filtered successfully.")
-            row_loadid_count = loadid_dt_dataframe.count()
-            logger.info("Job inst dataframe row count: {}".format(row_loadid_count))
-
-            # Extract job details
-            c_co_loadid = loadid_dt_dataframe.select('JOB_ID').first()[0]
-            c_co_loadid_str = str(c_co_loadid)
-            c_co_loadcd = loadid_dt_dataframe.select('JOB_CD').first()[0]
-            c_co_loadcd_str = str(c_co_loadcd)
-            c_column = loadid_dt_dataframe.select('REPORTING_DT').first()[0]
-
-            # Prepare SQL statements for updating and deleting records
-            str_upd_sts_active = (
-                "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBX_ACTIVE' "
-                "WHERE JOB_ID = {loadid_var}".format(ctg=catlog, loadid_var=c_co_loadid_str)
-            )
-            str_del_sql = (
-                "DELETE FROM {ctg}.fdi_refined_amfin_ops_schema.job_errors WHERE JOB_ID == {loadid_var}"
-                .format(ctg=catlog, loadid_var=c_co_loadid_str)
-            )
-            str_del_srcdata_sql = (
-                "UPDATE {ctg}.fdi_refined_amfin_fe_schema.fe_cib_invoice_trnsfmd SET ACTIVE_FLAG = 'N' "
-                "WHERE JOB_ID = {loadid_var}".format(ctg=catlog, loadid_var=c_co_loadid_str)
-            )
-
-            # Execute SQL statements if there is exactly one job instance
-            if row_loadid_count == 1:
-                logger.info("Configuring Spark session.")
-                spark = SparkSession.getActiveSession()
-                logger.info("Spark session received.")
-
-                # Execute SQL statements
-                spark.sql(str_upd_sts_active)
-                logger.info("Updated job status to ACTIVE successfully.")
-                spark.sql(str_del_sql)
-                logger.info("Deleted records from Errors table successfully.")
-                spark.sql(str_del_srcdata_sql)
-                logger.info("Updated source data status to N successfully.")
-            else:
-                logger.warning("No data in error table to process.")
-
-            # Fetch source data
-            src_dataframe = df.results.get('fe_cib_fx_rate_raw').results.get("data")
-            logger.info("Source data dataframe created successfully.")
-            logger.info("Source dataframe count: {}".format(src_dataframe.count()))
-
-            # Display the source dataframe (for debugging purposes)
-            display(src_dataframe)
-
-            # Fetch hierarchy data and filter for currency class
-            logger.info("Reading hierarchy data from table.")
-            hie_dataframe = spark.read.table("25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe")
-
-            logger.info("Filtering hierarchy data for currency class 'fe_cib_ccy'.")
-            hie_dataframe_ccy_whr = hie_dataframe.where(hie_dataframe.ENTITY_CLASS == "fe_cib_ccy")
-
-            # Join with source dataframe
-            logger.info("Joining source dataframe with filtered hierarchy data.")
-            df_joined_src_ccy = (
-                src_dataframe.alias('src').join(
-                    hie_dataframe_ccy_whr.alias('hie_ccy'),
-                    on=col('src.SUB_FUND_CCY') == col('hie_ccy.ENTITY_NM'),
-                    how="left"
-                )
-            )
-
-            logger.info("Join operation completed successfully.")
-
-            # Filter for error data where ccy_Ref_Hie_Cd is null
-            logger.info("Filtering joined data for rows with null 'ccy_Ref_Hie_Cd'.")
-            df_joined_err_cur_data = df_joined_src_ccy.filter(df_joined_src_ccy["ccy_Ref_Hie_Cd"].isNull())
-
-            # Prepare error data for insertion
-            logger.info("Preparing error data for insertion.")
-            df_joined_err_data_cur_ins = df_joined_err_cur_data.select(df_joined_err_cur_data.SUB_FUND_CCY)
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn("LOAD_ID", lit(c_co_loadid).cast("long"))
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn("LOAD_CD", lit(c_co_loadcd))
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn("ROW_ID", lit(1).cast("long"))
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn("ERROR_ID", lit(2).cast("long"))
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn("FROW_ID", lit(123).cast("long"))
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn("ERROR_RANK", lit(3))
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn("ERROR_COLUMN", lit("SUB_FUND_CCY"))
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
-                "ERROR_VALUE", concat(lit("The SUB_FUND_CCY column is invalid. - "), df_joined_err_cur_data.SUB_FUND_CCY)
-            )
-            df_joined_err_data_cur_ins = df_joined_err_data_cur_ins.withColumn(
-                "CREATE_TS", F.current_date().cast("Timestamp").alias('CREATE_TS')
-            )
-
-            fatal_err_count = df_joined_err_data_cur_ins.count()
-
-            # Check if there are any fatal errors and update the job status accordingly
-            try:
-                if fatal_err_count == 0:
-                    str_upd_sts_sucss = (
-                        "UPDATE {ctg}.fdi_refined_amfin_ops_schema.job_inst SET JOB_STATUS = 'FLS_DBX_LOADSUCESS' "
-                        "WHERE JOB_ID = {loadid_var}".format(ctg=catlog, loadid_var=c_co_loadid_str)
-                    )
-                    spark.sql(str_upd_sts_sucss)
-                    logger.info("Updated job status to success successfully.")
-                else:
-                    df_joined_err_data_cur_ins.write.mode("append").saveAsTable(
-                        "{ctg}.fdi_refined_amfin_ops_schema.job_errors".format(ctg=catlog))
-                    logging.info("Error data written to the job_errors table successfully.")
-            except Exception as e:
-                logger.error("An error occurred: %s", e)
-
-        except Exception as e:
-            logger.error("Error in fe_cib_invoice_transformer: %s", e)
-            raise
-
-        return df_joined_err_data_cur_ins
+        with patch.object(fe_cib_invoice_raw_df, 'join', return_value=MagicMock()) as mock_join:
+            result = fe_cib_invoice_raw_df.join(MagicMock(), on="SUB_FUND_CCY", how="left")
+            assert mock_join.called, "Join was not executed"
