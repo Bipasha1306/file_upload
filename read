@@ -8,8 +8,7 @@ import datetime
 
 @pytest.mark.fasttest
 @patch('src.amimafinanceaws_everest2_transformation_derivation_fe_cib.transformations.fe_cib_invoice_trnsfmd.SparkSession.getActiveSession')
-@patch('pyspark.sql.SparkSession.table')
-def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session):
+def test_fe_cib_invoice_transformer(mock_get_active_session):
     # Create a mock Spark session
     mock_spark = MagicMock()
     mock_get_active_session.return_value = mock_spark
@@ -34,9 +33,6 @@ def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session):
         f"WHERE JOB_ID = {c_co_loadid_str}"
     )
 
-    # Create a Spark session
-    spark = SparkSession.builder.master("local").appName("test").getOrCreate()
-
     # Define schema for job signoff
     job_signoff_schema = StructType([
         StructField("REPORTING_DATE", DateType(), True)
@@ -49,13 +45,13 @@ def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session):
         StructField("ENTITY_CD", StringType(), True)
     ])
     
-    hrchy_entity_inst_fe_df = spark.createDataFrame([
+    hrchy_entity_inst_fe_df = mock_spark.createDataFrame([
         Row(ENTITY_CLASS="fe_cib_ccy", ENTITY_NM="USD", ENTITY_CD="USD123")
     ], hrchy_entity_inst_fe_schema)
     
-    mock_table.return_value = hrchy_entity_inst_fe_df
+    mock_spark.table.return_value = hrchy_entity_inst_fe_df
     
-    hie_dataframe = mock_table()
+    hie_dataframe = mock_spark.table("25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe")
     
     print("hie_dataframe preview:")
     hie_dataframe.show()
@@ -67,7 +63,7 @@ def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session):
         StructField("TW04_INVOICE_SECTION", StringType(), True)
     ])
 
-    fe_cib_invoice_raw_df = spark.createDataFrame([
+    fe_cib_invoice_raw_df = mock_spark.createDataFrame([
         Row(SUB_FUND_CCY="USD", PROCESSING_MED="MED_TYPE", TW04_INVOICE_SECTION="SECTION_1")
     ], fe_cib_invoice_raw_schema)
 
@@ -99,6 +95,7 @@ def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session):
 
     # Simulated SQL Execution
     if row_loadid_count == 1:
+        mock_spark.sql.return_value = MagicMock()  # Prevent NoneType issues
         mock_spark.sql(str_upd_sts_active)
         mock_spark.sql(str_del_sql)
         mock_spark.sql(str_del_srcdata_sql)
