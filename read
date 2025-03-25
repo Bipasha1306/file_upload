@@ -53,9 +53,9 @@ def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session):
         Row(ENTITY_CLASS="fe_cib_ccy", ENTITY_NM="USD", ENTITY_CD="USD123")
     ], hrchy_entity_inst_fe_schema)
     
-    mock_table.side_effect = lambda table_name: hrchy_entity_inst_fe_df if table_name == "25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe" else None
-
-    hie_dataframe = spark.table("25591_ctg_dev.fdi_refined_amfin_fe_schema.hrchy_entity_inst_fe")
+    mock_table.return_value = hrchy_entity_inst_fe_df
+    
+    hie_dataframe = mock_table()
     
     print("hie_dataframe preview:")
     hie_dataframe.show()
@@ -102,7 +102,7 @@ def test_fe_cib_invoice_transformer(mock_table, mock_get_active_session):
         mock_spark.sql(str_upd_sts_active)
         mock_spark.sql(str_del_sql)
         mock_spark.sql(str_del_srcdata_sql)
-    
+        
     mock_spark.sql.assert_any_call(str_upd_sts_active)
     mock_spark.sql.assert_any_call(str_del_sql)
     mock_spark.sql.assert_any_call(str_del_srcdata_sql)
