@@ -1,0 +1,39 @@
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+
+import javax.sql.DataSource;
+
+public class DatabricksHikariExample {
+    public static void main(String[] args) {
+        HikariConfig config = new HikariConfig();
+
+        config.setJdbcUrl(
+            "jdbc:databricks://<workspace-host>:443/default;" +
+            "transportMode=http;" +
+            "ssl=1;" +
+            "AuthMech=3;" +
+            "UID=your_username;" +
+            "PWD=your_password"
+        );
+        
+        config.setDriverClassName("com.databricks.client.jdbc.Driver");
+        config.setMaximumPoolSize(5);
+        config.setMinimumIdle(1);
+        config.setIdleTimeout(30000);
+        config.setConnectionTimeout(30000);
+        config.setLeakDetectionThreshold(60000);
+
+        DataSource dataSource = new HikariDataSource(config);
+
+        try (var connection = dataSource.getConnection();
+             var stmt = connection.createStatement();
+             var rs = stmt.executeQuery("SELECT current_date()")) {
+
+            while (rs.next()) {
+                System.out.println("Date from Databricks: " + rs.getString(1));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
